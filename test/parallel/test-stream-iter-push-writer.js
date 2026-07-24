@@ -6,7 +6,7 @@ const assert = require('assert');
 const { push, ondrain, text } = require('stream/iter');
 
 async function testOndrain() {
-  const { writer } = push({ highWaterMark: 1 });
+  const { writer } = push({ budget: 16384 });
 
   // With space available, ondrain resolves immediately
   const drainResult = ondrain(writer);
@@ -39,13 +39,14 @@ async function testOndrainProtocolErrorPropagates() {
 }
 
 async function testWriteWithSignalRejects() {
-  const { writer, readable } = push({ highWaterMark: 1 });
+  const kChunk = new Uint8Array(16384);
+  const { writer, readable } = push({ budget: 16384 });
 
   // Fill the buffer so write will block
-  writer.writeSync('a');
+  writer.writeSync(kChunk);
 
   const ac = new AbortController();
-  const writePromise = writer.write('b', { signal: ac.signal });
+  const writePromise = writer.write(kChunk, { signal: ac.signal });
 
   // Signal fires while write is pending
   ac.abort();
@@ -59,7 +60,7 @@ async function testWriteWithSignalRejects() {
 }
 
 async function testWriteWithPreAbortedSignal() {
-  const { writer, readable } = push({ highWaterMark: 1 });
+  const { writer, readable } = push({ budget: 16384 });
 
   // Pre-aborted signal should reject immediately
   await assert.rejects(
@@ -75,48 +76,49 @@ async function testWriteWithPreAbortedSignal() {
 }
 
 async function testCancelledWriteRemovedFromQueue() {
-  const { writer, readable } = push({ highWaterMark: 1 });
+  const kChunk = new Uint8Array(16384);
+  const { writer, readable } = push({ budget: 16384 });
 
   // Fill the buffer
-  writer.writeSync('first');
+  writer.writeSync(kChunk);
 
   const ac = new AbortController();
   // This write should be queued since buffer is full
-  const cancelledWrite = writer.write('cancelled', { signal: ac.signal });
+  const cancelledWrite = writer.write(kChunk, { signal: ac.signal });
 
   // Cancel it
   ac.abort();
   await cancelledWrite.catch(() => {});
 
-  // Drain 'first' to make room for the replacement write
+  // Drain to make room for the replacement write
   const iter = readable[Symbol.asyncIterator]();
   await iter.next();
 
   // The cancelled write should NOT occupy a pending slot.
   // A new write should succeed now that the buffer has room.
-  await writer.write('second');
+  await writer.write(kChunk);
   writer.end();
 
   const result = await iter.next();
-  // 'second' should be the next (and only remaining) chunk
-  const decoder = new TextDecoder();
-  let data = '';
+  assert.ok(!result.done);
+  let totalBytes = 0;
   for (const chunk of result.value) {
-    data += decoder.decode(chunk, { stream: true });
+    totalBytes += chunk.byteLength;
   }
-  assert.strictEqual(data, 'second');
+  assert.strictEqual(totalBytes, 16384);
   await iter.return();
 }
 
 async function testOndrainResolvesFalseOnConsumerBreak() {
-  const { writer, readable } = push({ highWaterMark: 1 });
+  const kChunk = new Uint8Array(16384);
+  const { writer, readable } = push({ budget: 16384 });
 
-  // Fill the buffer so desiredSize = 0
-  writer.writeSync('a');
+  // Fill the buffer so canWrite = false
+  writer.writeSync(kChunk);
 
   // Also queue a pending write so that reading one chunk
-  // doesn't clear backpressure (the pending write refills the slot)
-  const pendingWrite = writer.write('b');
+  // doesn't clear backpressure (the pending write refills the buffer)
+  const pendingWrite = writer.write(kChunk);
 
   // Start a drain wait - still at capacity
   const drainPromise = ondrain(writer);
@@ -132,14 +134,15 @@ async function testOndrainResolvesFalseOnConsumerBreak() {
 }
 
 async function testOndrainRejectsOnConsumerThrow() {
-  const { writer, readable } = push({ highWaterMark: 1 });
+  const kChunk = new Uint8Array(16384);
+  const { writer, readable } = push({ budget: 16384 });
 
-  // Fill the buffer so desiredSize = 0
-  writer.writeSync('a');
+  // Fill the buffer so canWrite = false
+  writer.writeSync(kChunk);
 
   // Also queue a pending write so that reading one chunk
-  // doesn't clear backpressure (the pending write refills the slot)
-  const pendingWrite = writer.write('b');
+  // doesn't clear backpressure (the pending write refills the buffer)
+  const pendingWrite = writer.write(kChunk);
 
   // Start a drain wait - still at capacity
   const drainPromise = ondrain(writer);
@@ -160,7 +163,7 @@ async function testOndrainRejectsOnConsumerThrow() {
 }
 
 async function testWritev() {
-  const { writer, readable } = push({ highWaterMark: 10 });
+  const { writer, readable } = push({ budget: 16384 });
   const enc = new TextEncoder();
   writer.writev([enc.encode('hel'), enc.encode('lo')]);
   writer.endSync();
@@ -169,7 +172,7 @@ async function testWritev() {
 }
 
 async function testWritevSync() {
-  const { writer, readable } = push({ highWaterMark: 10 });
+  const { writer, readable } = push({ budget: 16384 });
   const enc = new TextEncoder();
   assert.strictEqual(writer.writevSync([enc.encode('hel'), enc.encode('lo')]), true);
   writer.endSync();
@@ -178,7 +181,7 @@ async function testWritevSync() {
 }
 
 async function testWritevSyncInvalidChunkDoesNotQueue() {
-  const { writer, readable } = push({ highWaterMark: 10 });
+  const { writer, readable } = push({ budget: 16384 });
 
   assert.throws(
     () => writer.writevSync([1]),
@@ -200,7 +203,7 @@ async function testWritevSyncInvalidChunkDoesNotQueue() {
 }
 
 async function testWritevMixedTypes() {
-  const { writer, readable } = push({ highWaterMark: 10 });
+  const { writer, readable } = push({ budget: 16384 });
   // Mix strings and Uint8Arrays
   writer.writev(['hel', new TextEncoder().encode('lo')]);
   writer.endSync();
@@ -285,8 +288,9 @@ async function testWriteUint8Array() {
 }
 
 async function testOndrainWaitsForDrain() {
-  const { writer, readable } = push({ highWaterMark: 1 });
-  writer.writeSync('a'); // Fills buffer
+  const kChunk = new Uint8Array(16384);
+  const { writer, readable } = push({ budget: 16384 });
+  writer.writeSync(kChunk); // Fills budget
 
   let drainState = 'pending';
   const drainPromise = ondrain(writer).then((v) => { drainState = v; });
@@ -305,8 +309,9 @@ async function testOndrainWaitsForDrain() {
 
 // Consumer throw causes subsequent writes to reject with consumer's error
 async function testConsumerThrowRejectsWrites() {
-  const { writer, readable } = push({ highWaterMark: 1 });
-  writer.writeSync('a');
+  const kChunk = new Uint8Array(16384);
+  const { writer, readable } = push({ budget: 16384 });
+  writer.writeSync(kChunk);
 
   const iter = readable[Symbol.asyncIterator]();
   const err = new Error('consumer boom');
@@ -409,11 +414,12 @@ async function testConsumerThrowRejectsPendingRead() {
 
 // end() while writes are pending rejects those writes
 async function testEndRejectsPendingWrites() {
-  const { writer, readable } = push({ highWaterMark: 1, backpressure: 'block' });
-  writer.writeSync('a'); // fill buffer
+  const kChunk = new Uint8Array(16384);
+  const { writer, readable } = push({ budget: 16384, backpressure: 'unbounded' });
+  writer.writeSync(kChunk); // fill budget
 
   // This write blocks on backpressure
-  const writePromise = writer.write('b');
+  const writePromise = writer.write(kChunk);
 
   await new Promise(setImmediate);
 
@@ -431,7 +437,7 @@ async function testEndRejectsPendingWrites() {
 }
 
 async function testEndIdempotentWhenClosed() {
-  const { writer, readable } = push({ highWaterMark: 10 });
+  const { writer, readable } = push({ budget: 16384 });
   await writer.write('hello');
   // Start consuming concurrently (end() waits for drain)
   const consume = (async () => {
@@ -447,7 +453,7 @@ async function testEndIdempotentWhenClosed() {
 }
 
 async function testAsyncDispose() {
-  const { writer, readable } = push({ highWaterMark: 10 });
+  const { writer, readable } = push({ budget: 16384 });
   writer.writeSync('hello');
   // Symbol.asyncDispose calls fail() with no argument
   await writer[Symbol.asyncDispose]();
@@ -463,7 +469,7 @@ async function testAsyncDispose() {
 }
 
 async function testSyncDispose() {
-  const { writer, readable } = push({ highWaterMark: 10 });
+  const { writer, readable } = push({ budget: 16384 });
   writer.writeSync('hello');
   // Symbol.dispose calls fail() with no argument
   writer[Symbol.dispose]();
@@ -479,7 +485,7 @@ async function testSyncDispose() {
 }
 
 async function testEndRejectsWhenErrored() {
-  const { writer, readable } = push({ highWaterMark: 10 });
+  const { writer, readable } = push({ budget: 16384 });
   await writer.write('hello');
   const err = new Error('boom');
   await writer.fail(err);
