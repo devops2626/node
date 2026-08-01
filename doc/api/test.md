@@ -1782,6 +1782,13 @@ changes:
     If both `coverageExcludeGlobs` and `coverageIncludeGlobs` are provided,
     files must meet **both** criteria to be included in the coverage report.
     **Default:** `undefined`.
+  * `coverageIncludeAll` {boolean} Includes source files that were never loaded by
+    the test run in the coverage report, where they are reported as having zero
+    coverage. Candidate files are searched for in `cwd`, and are subject to the
+    same `coverageIncludeGlobs` and `coverageExcludeGlobs` filtering as the rest
+    of the report. This property is only applicable when `coverage` was set to
+    `true`.
+    **Default:** `false`.
   * `lineCoverage` {number} Require a minimum percent of covered lines. If code
     coverage does not reach the threshold specified, the process will exit with code `1`.
     **Default:** `0`.
@@ -2255,8 +2262,7 @@ added: v22.3.0
 * `fn` {Function} A function used to compute the location of the snapshot file.
   The function receives the path of the test file as its only argument. If the
   test is not associated with a file (for example in the REPL), the input is
-  undefined. `fn()` must return a string specifying the location of the snapshot
-  snapshot file.
+  undefined. `fn()` must return a string specifying the location of the snapshot file.
 
 This function is used to customize the location of the snapshot file used for
 snapshot testing. By default, the snapshot filename is the same as the entry
