@@ -126,8 +126,8 @@ starting Node.js. The \fBnode:ffi\fR module also requires the
 \fB--experimental-ffi\fR flag and is only available in builds with FFI support.
 Example:
 .Bd -literal
-const { DynamicLibrary } = require('node:ffi');
-const lib = new DynamicLibrary('mylib.so');
+const { DynamicLibrary, suffix } = require('node:ffi');
+const lib = new DynamicLibrary(`./mylib.${suffix}`);
 .Ed
 .Bd -literal
 $ node --permission --experimental-ffi index.js
@@ -221,6 +221,17 @@ Error: connect ERR_ACCESS_DENIED Access to this API has been restricted. Use --a
   code: 'ERR_ACCESS_DENIED',
 }
 .Ed
+.
+.It Fl -allow-openssl-store
+When using the Permission Model, the process will not be able to use
+OpenSSL STORE loaders by default, for example to load a private key from a
+\fB<URL>\fR passed to \fBcrypto.createPrivateKey()\fR. Attempts to do so will throw
+an \fBERR_ACCESS_DENIED\fR unless the user explicitly passes the
+\fB--allow-openssl-store\fR flag. This permission can be dropped at runtime via
+\fBpermission.drop()\fR.
+This flag grants broad authority to configured OpenSSL STORE loaders. A loader
+may access files, devices, tokens, or the network. Access performed by a loader
+is not constrained by the \fBfs.read\fR, \fBfs.write\fR, or \fBnet\fR permission scopes.
 .
 .It Fl -allow-wasi
 When using the Permission Model, the process will not be capable of creating
@@ -1183,6 +1194,8 @@ WASI - manageable through \fB--allow-wasi\fR flag
 Addons - manageable through \fB--allow-addons\fR flag
 .It
 FFI - manageable through \fB--allow-ffi\fR flag
+.It
+OpenSSL STORE loaders - manageable through \fB--allow-openssl-store\fR flag
 .El
 .
 .It Fl -permission-audit
@@ -1928,6 +1941,8 @@ one is included in the list below.
 \fB--allow-inspector\fR
 .It
 \fB--allow-net\fR
+.It
+\fB--allow-openssl-store\fR
 .It
 \fB--allow-wasi\fR
 .It

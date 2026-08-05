@@ -3019,7 +3019,9 @@ const server = http.createServer((req, res) => {
 <!-- YAML
 added: v16.9.0
 changes:
-  - version: v26.2.0
+  - version:
+     - v26.2.0
+     - v24.19.0
     pr-url: https://github.com/nodejs/node/pull/62562
     description: Marking the API stable.
   - version:
@@ -3119,6 +3121,19 @@ console.log(res); // prints 'HELLOWORLD'
 
 For convenience, the [`readable.compose(stream)`][] method is available on
 {Readable} and {Duplex} streams as a wrapper for this function.
+
+### `stream.isDestroyed(stream)`
+
+<!-- YAML
+added:
+  - v19.9.0
+  - v18.17.0
+-->
+
+* `stream` {Readable|Writable|Duplex}
+* Returns: {boolean|null} - Only returns `null` if `stream` is not a valid `Readable`, `Writable` or `Duplex`.
+
+Returns whether the stream has been destroyed.
 
 ### `stream.isErrored(stream)`
 

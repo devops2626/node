@@ -69,6 +69,7 @@ jobs:
                 ++ builtins.attrValues (
                   { inherit (import <nixpkgs> {}) nixfmt-tree sccache; }
                   // import ./tools/nix/openssl-matrix.nix {}
+                  // import ./tools/nix/pkcs11.nix {}
                 )")" \
           | xargs nix-store --realise \
           | xargs nix-store --query --requisites \
@@ -86,6 +87,7 @@ jobs:
                 ++ builtins.attrValues (
                   { inherit (import <nixpkgs> {}) nixfmt-tree sccache; }
                   // import ./tools/nix/openssl-matrix.nix {}
+                  // import ./tools/nix/pkcs11.nix {}
                 )")" \
           | xargs nix-store --realise \
           | xargs nix-store --query --requisites \

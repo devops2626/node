@@ -349,6 +349,7 @@ class CustomAggregate {
                                Global<Function> CustomAggregate::*mptr) {
     CustomAggregate* self =
         static_cast<CustomAggregate*>(sqlite3_user_data(ctx));
+    CallbackDepthGuard guard(self->db_);
     Environment* env = self->env_;
     Isolate* isolate = env->isolate();
     auto agg = self->GetAggregate(ctx);
@@ -395,12 +396,18 @@ class CustomAggregate {
       return;
     }
 
+    if (!self->db_->IsOpen()) {
+      THROW_ERR_INVALID_STATE(env, "database is not open");
+      return;
+    }
+
     agg->value.Reset(isolate, ret);
   }
 
   static inline void xValueBase(sqlite3_context* ctx, bool is_final) {
     CustomAggregate* self =
         static_cast<CustomAggregate*>(sqlite3_user_data(ctx));
+    CallbackDepthGuard guard(self->db_);
     Environment* env = self->env_;
     Isolate* isolate = env->isolate();
     auto agg = self->GetAggregate(ctx);
@@ -426,6 +433,9 @@ class CustomAggregate {
                .ToLocal(&result)) {
         self->db_->SetIgnoreNextSQLiteError(true);
         sqlite3_result_error(ctx, "", 0);
+      } else if (!self->db_->IsOpen()) {
+        THROW_ERR_INVALID_STATE(env, "database is not open");
+        return;
       }
     } else {
       result = Local<Value>::New(isolate, agg->value);
@@ -457,6 +467,10 @@ class CustomAggregate {
         auto fn = start_v.As<Function>();
         MaybeLocal<Value> retval =
             fn->Call(env_->context(), Null(isolate), 0, nullptr);
+        if (!db_->IsOpen()) {
+          THROW_ERR_INVALID_STATE(env_, "database is not open");
+          return nullptr;
+        }
         if (!retval.ToLocal(&start_v)) {
           db_->SetIgnoreNextSQLiteError(true);
           sqlite3_result_error(ctx, "", 0);
@@ -669,6 +683,7 @@ void UserDefinedFunction::xFunc(sqlite3_context* ctx,
                                 sqlite3_value** argv) {
   UserDefinedFunction* self =
       static_cast<UserDefinedFunction*>(sqlite3_user_data(ctx));
+  CallbackDepthGuard guard(self->db_);
   Environment* env = self->env_;
   Isolate* isolate = env->isolate();
   auto recv = Undefined(isolate);
@@ -700,6 +715,12 @@ void UserDefinedFunction::xFunc(sqlite3_context* ctx,
 
   MaybeLocal<Value> retval =
       fn->Call(env->context(), recv, argc, js_argv.data());
+
+  if (!self->db_->IsOpen()) {
+    THROW_ERR_INVALID_STATE(env, "database is not open");
+    return;
+  }
+
   Local<Value> result;
   if (!retval.ToLocal(&result)) {
     // Ignore the SQLite error because a JavaScript exception is pending.
@@ -912,10 +933,9 @@ void DatabaseSync::RemoveBackup(BackupJob* job) {
 void DatabaseSync::DeleteSessions() {
   // all attached sessions need to be deleted before the database is closed
   // https://www.sqlite.org/session/sqlite3session_create.html
-  for (auto* session : sessions_) {
-    sqlite3session_delete(session);
+  while (!sessions_.empty()) {
+    (*sessions_.begin())->Delete();
   }
-  sessions_.clear();
 }
 
 DatabaseSync::~DatabaseSync() {
@@ -1434,6 +1454,8 @@ void DatabaseSync::Close(const FunctionCallbackInfo<Value>& args) {
   ASSIGN_OR_RETURN_UNWRAP(&db, args.This());
   Environment* env = Environment::GetCurrent(args);
   THROW_AND_RETURN_ON_BAD_STATE(env, !db->IsOpen(), "database is not open");
+  THROW_AND_RETURN_ON_BAD_STATE(
+      env, db->IsInCallback(), "database cannot be closed while in a callback");
   db->FinalizeStatements();
   db->DeleteSessions();
   int r = sqlite3_close_v2(db->connection_);
@@ -2118,13 +2140,22 @@ void DatabaseSync::CreateSession(const FunctionCallbackInfo<Value>& args) {
   sqlite3_session* pSession;
   int r = sqlite3session_create(db->connection_, db_name.c_str(), &pSession);
   CHECK_ERROR_OR_THROW(env->isolate(), db, r, SQLITE_OK, void());
-  db->sessions_.insert(pSession);
+  bool wrapper_owns_session = false;
+  auto delete_session_on_failure = OnScopeLeave([&]() {
+    if (!wrapper_owns_session) {
+      sqlite3session_delete(pSession);
+    }
+  });
 
   r = sqlite3session_attach(pSession, table == "" ? nullptr : table.c_str());
   CHECK_ERROR_OR_THROW(env->isolate(), db, r, SQLITE_OK, void());
 
   BaseObjectPtr<Session> session =
       Session::Create(env, BaseObjectPtr<DatabaseSync>(db), pSession);
+  if (!session) {
+    return;
+  }
+  wrapper_owns_session = true;
   args.GetReturnValue().Set(session->object());
 }
 
@@ -2373,13 +2404,17 @@ void DatabaseSync::ApplyChangeset(const FunctionCallbackInfo<Value>& args) {
   BaseObjectPtr<DatabaseSync> guard(db);
 
   ArrayBufferViewContents<uint8_t> buf(args[0]);
-  int r = sqlite3changeset_apply(
-      db->connection_,
-      buf.length(),
-      const_cast<void*>(static_cast<const void*>(buf.data())),
-      context.filterCallback ? xFilter : nullptr,
-      xConflict,
-      static_cast<void*>(&context));
+  int r;
+  {
+    CallbackDepthGuard guard(db);
+    r = sqlite3changeset_apply(
+        db->connection_,
+        buf.length(),
+        const_cast<void*>(static_cast<const void*>(buf.data())),
+        context.filterCallback ? xFilter : nullptr,
+        xConflict,
+        static_cast<void*>(&context));
+  }
   if (r == SQLITE_OK) {
     args.GetReturnValue().Set(true);
     return;
@@ -2514,6 +2549,7 @@ int DatabaseSync::AuthorizerCallback(void* user_data,
                                      const char* param3,
                                      const char* param4) {
   DatabaseSync* db = static_cast<DatabaseSync*>(user_data);
+  CallbackDepthGuard guard(db);
   Environment* env = db->env();
   Isolate* isolate = env->isolate();
   HandleScope handle_scope(isolate);
@@ -3813,6 +3849,7 @@ Session::Session(Environment* env,
     : BaseObject(env, object),
       session_(session),
       database_(std::move(database)) {
+  database_->sessions_.insert(this);
   MakeWeak();
 }
 
@@ -3905,10 +3942,12 @@ void Session::Dispose(const v8::FunctionCallbackInfo<v8::Value>& args) {
 }
 
 void Session::Delete() {
-  if (!database_ || !database_->connection_ || session_ == nullptr) return;
+  if (session_ == nullptr) return;
   sqlite3session_delete(session_);
-  database_->sessions_.erase(session_);
   session_ = nullptr;
+  if (database_) {
+    database_->sessions_.erase(this);
+  }
 }
 
 void DefineConstants(Local<Object> target) {
