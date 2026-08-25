@@ -1110,9 +1110,6 @@ Legacy alias for \fB--no-require-module\fR.
 .It Fl -no-experimental-sqlite
 Disable the experimental \fBnode:sqlite\fR module.
 .
-.It Fl -no-experimental-websocket
-Disable exposition of \fB<WebSocket>\fR on the global scope.
-.
 .It Fl -no-experimental-webstorage
 Disable \fBWeb Storage\fR support.
 .
@@ -1332,6 +1329,13 @@ forked processes, or clustered processes.
 .It Fl -run
 This runs a specified command from a package.json's \fB"scripts"\fR object.
 If a missing \fB"command"\fR is provided, it will list the available scripts.
+Passing \fB--run\fR without a command lists the available scripts and exits
+with a non-zero exit code:
+.Bd -literal
+$ node --run
+Available scripts are:
+  test: node --test
+.Ed
 \fB--run\fR will traverse up to the root directory and finds a \fBpackage.json\fR
 file to run the command from.
 \fB--run\fR prepends \fB./node_modules/.bin\fR for each ancestor of
@@ -1864,6 +1868,10 @@ When set to 1, the module compile cache can be reused across different directory
 locations as long as the module layout relative to the cache directory remains the same,
 and by any user (the cache subdirectory is not suffixed with the creating user's uid).
 .
+.It Ev NODE_COMPILE_CACHE_READONLY Ar 1
+When set to 1, the module compile cache only reads existing entries from
+its directory: nothing is written to it and it is not created if missing.
+.
 .It Ev NODE_DEBUG Ar module[,…]
 \fB','\fR-separated list of core modules that should print debug information.
 .
@@ -2028,6 +2036,8 @@ one is included in the list below.
 .It
 \fB--experimental-web-worker\fR
 .It
+\fB--experimental-websocket\fR
+.It
 \fB--force-context-aware\fR
 .It
 \fB--force-fips\fR
@@ -2087,8 +2097,6 @@ one is included in the list below.
 \fB--no-experimental-sqlite\fR
 .It
 \fB--no-experimental-strip-types\fR
-.It
-\fB--no-experimental-websocket\fR
 .It
 \fB--no-experimental-webstorage\fR
 .It

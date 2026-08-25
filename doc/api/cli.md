@@ -2147,14 +2147,6 @@ changes:
 
 Disable the experimental [`node:sqlite`][] module.
 
-### `--no-experimental-websocket`
-
-<!-- YAML
-added: v22.0.0
--->
-
-Disable exposition of {WebSocket} on the global scope.
-
 ### `--no-experimental-webstorage`
 
 <!-- YAML
@@ -2685,6 +2677,9 @@ forked processes, or clustered processes.
 <!-- YAML
 added: v22.0.0
 changes:
+  - version: REPLACEME
+    pr-url: https://github.com/nodejs/node/pull/64606
+    description: Passing `--run` without a command lists the available scripts.
   - version: v22.3.0
     pr-url: https://github.com/nodejs/node/pull/53032
     description: NODE_RUN_SCRIPT_NAME environment variable is added.
@@ -2700,6 +2695,15 @@ changes:
 
 This runs a specified command from a package.json's `"scripts"` object.
 If a missing `"command"` is provided, it will list the available scripts.
+
+Passing `--run` without a command lists the available scripts and exits
+with a non-zero exit code:
+
+```console
+$ node --run
+Available scripts are:
+  test: node --test
+```
 
 `--run` will traverse up to the root directory and finds a `package.json`
 file to run the command from.
@@ -3740,6 +3744,15 @@ When set to 1, the [module compile cache][] can be reused across different direc
 locations as long as the module layout relative to the cache directory remains the same,
 and by any user (the cache subdirectory is not suffixed with the creating user's uid).
 
+### `NODE_COMPILE_CACHE_READONLY=1`
+
+<!-- YAML
+added: REPLACEME
+-->
+
+When set to 1, the [module compile cache][] only reads existing entries from
+its directory: nothing is written to it and it is not created if missing.
+
 ### `NODE_DEBUG=module[,…]`
 
 <!-- YAML
@@ -3902,6 +3915,7 @@ one is included in the list below.
 * `--experimental-vm-modules`
 * `--experimental-wasi-unstable-preview1`
 * `--experimental-web-worker`
+* `--experimental-websocket`
 * `--force-context-aware`
 * `--force-fips`
 * `--force-node-api-uncaught-exceptions-policy`
@@ -3932,7 +3946,6 @@ one is included in the list below.
 * `--no-experimental-global-navigator`
 * `--no-experimental-sqlite`
 * `--no-experimental-strip-types`
-* `--no-experimental-websocket`
 * `--no-experimental-webstorage`
 * `--no-extra-info-on-fatal-exception`
 * `--no-force-async-hooks-checks`
@@ -4577,7 +4590,7 @@ node --stack-trace-limit=12 -p -e "Error.stackTraceLimit" # prints 12
 [deprecation warnings]: deprecations.md#list-of-deprecated-apis
 [dtls documentation]: dtls.md
 [emit_warning]: process.md#processemitwarningwarning-options
-[environment_variables]: #environment-variables_1
+[environment_variables]: #environment-variables-1
 [filtering tests by name]: test.md#filtering-tests-by-name
 [global setup and teardown]: test.md#global-setup-and-teardown
 [jitless]: https://v8.dev/blog/jitless
@@ -4589,7 +4602,7 @@ node --stack-trace-limit=12 -p -e "Error.stackTraceLimit" # prints 12
 [running tests from the command line]: test.md#running-tests-from-the-command-line
 [scavenge garbage collector]: https://v8.dev/blog/orinoco-parallel-scavenger
 [security warning]: #warning-binding-inspector-to-a-public-ipport-combination-is-insecure
-[semi-space]: https://www.memorymanagement.org/glossary/s.html#semi.space
+[semi-space]: https://v8.dev/blog/trash-talk#minor-gc
 [single executable application]: single-executable-applications.md
 [snapshot testing]: test.md#snapshot-testing
 [syntax detection]: packages.md#syntax-detection
