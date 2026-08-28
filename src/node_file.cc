@@ -758,6 +758,12 @@ void NewFSReqCallback(const FunctionCallbackInfo<Value>& args) {
   new FSReqCallback(binding_data, args.This(), args[0]->IsTrue());
 }
 
+void CancelFSReq(const FunctionCallbackInfo<Value>& args) {
+  FSReqBase* req_wrap;
+  ASSIGN_OR_RETURN_UNWRAP(&req_wrap, args.This());
+  req_wrap->Cancel();
+}
+
 FSReqAfterScope::FSReqAfterScope(FSReqBase* wrap, uv_fs_t* req)
     : wrap_(wrap),
       req_(req),
@@ -1828,7 +1834,7 @@ static void RmSync(const FunctionCallbackInfo<Value>& args) {
   }
 
   // On Windows path::c_str() returns wide char, convert to std::string first.
-  std::string file_path_str = file_path.string();
+  std::string file_path_str = ConvertPathToUTF8(file_path);
   const char* path_c_str = file_path_str.c_str();
 #ifdef _WIN32
   int permission_denied_error = EPERM;
@@ -1837,14 +1843,14 @@ static void RmSync(const FunctionCallbackInfo<Value>& args) {
 #endif  // !_WIN32
 
   if (error == std::errc::operation_not_permitted) {
-    std::string message = "Operation not permitted: " + file_path_str;
+    std::string message = "Operation not permitted:";
     return env->ThrowErrnoException(EPERM, "rm", message.c_str(), path_c_str);
   } else if (error == std::errc::directory_not_empty) {
-    std::string message = "Directory not empty: " + file_path_str;
+    std::string message = "Directory not empty:";
     return env->ThrowErrnoException(
         ENOTEMPTY, "rm", message.c_str(), path_c_str);
   } else if (error == std::errc::not_a_directory) {
-    std::string message = "Not a directory: " + file_path_str;
+    std::string message = "Not a directory:";
     return env->ThrowErrnoException(ENOTDIR, "rm", message.c_str(), path_c_str);
 #ifdef _AIX
   } else if (error == std::errc::permission_denied ||
@@ -1855,7 +1861,7 @@ static void RmSync(const FunctionCallbackInfo<Value>& args) {
 #else
   } else if (error == std::errc::permission_denied) {
 #endif
-    std::string message = "Permission denied: " + file_path_str;
+    std::string message = "Permission denied:";
     return env->ThrowErrnoException(
         permission_denied_error, "rm", message.c_str(), path_c_str);
   }
@@ -4618,6 +4624,7 @@ static void CreatePerIsolateProperties(IsolateData* isolate_data,
   fst->InstanceTemplate()->SetInternalFieldCount(
       FSReqBase::kInternalFieldCount);
   fst->Inherit(AsyncWrap::GetConstructorTemplate(isolate_data));
+  SetProtoMethod(isolate, fst, "cancel", CancelFSReq);
   SetConstructorFunction(isolate, target, "FSReqCallback", fst);
 
   // Create FunctionTemplate for FileHandleReadWrap. There’s no need
@@ -4734,6 +4741,7 @@ void RegisterExternalReferences(ExternalReferenceRegistry* registry) {
   registry->Register(HandleToFd);
 #endif
   registry->Register(NewFSReqCallback);
+  registry->Register(CancelFSReq);
 
   registry->Register(FileHandle::New);
   registry->Register(FileHandle::Close);

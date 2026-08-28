@@ -877,6 +877,10 @@ class Http3ApplicationImpl final : public Session::Application {
           "HTTP/3 application received end of headers for stream %" PRIi64,
           id);
     stream->EmitHeaders();
+    // EmitHeaders() calls into JavaScript, which can synchronously destroy the
+    // stream. Its arena-backed state is released by Destroy(), so do not touch
+    // the stream again if that happened.
+    if (stream->is_destroyed()) return;
     if (fin) {
       // The stream is done. There's no more data to receive!
       Debug(&session(), "Headers are final for stream %" PRIi64, id);
@@ -919,6 +923,10 @@ class Http3ApplicationImpl final : public Session::Application {
           "HTTP/3 application received end of trailers for stream %" PRIi64,
           id);
     stream->EmitHeaders();
+    // EmitHeaders() calls into JavaScript, which can synchronously destroy the
+    // stream. Its arena-backed state is released by Destroy(), so do not touch
+    // the stream again if that happened.
+    if (stream->is_destroyed()) return;
     if (fin) {
       Debug(&session(), "Trailers are final for stream %" PRIi64, id);
       Stream::ReceiveDataFlags flags{
@@ -1083,6 +1091,13 @@ class Http3ApplicationImpl final : public Session::Application {
     if (auto stream = session->FindStream(id)) {
       return stream;
     }
+    // No record of a locally-initiated stream means we already destroyed it,
+    // and frames still in flight must not bring it back to life. See
+    // DefaultApplication::ReceiveStreamData for the same guard on the raw
+    // QUIC path.
+    if (!session->is_destroyed() && ngtcp2_conn_is_local_stream(*session, id)) {
+      return {};
+    }
     if (auto stream = session->CreateStream(id)) {
       return stream;
     }
@@ -1224,6 +1239,23 @@ class Http3ApplicationImpl final : public Session::Application {
       return NGHTTP3_ERR_CALLBACK_FAILURE;
     }
     auto& session = app.session();
+
+    // DATA frames for a request stream the application already destroyed can
+    // still arrive. Drop the payload rather than resurrecting the stream or
+    // tearing down the connection, but return its credit: unlike framing
+    // bytes, DATA payload is not included in the count nghttp3 reports to
+    // ReceiveStreamData, so we own it. The is_destroyed() check must come
+    // first, see DefaultApplication::ReceiveStreamData.
+    if (!session.is_destroyed() && !session.FindStream(id) &&
+        ngtcp2_conn_is_local_stream(session, id)) {
+      Debug(&session,
+            "HTTP/3 discarding %zu bytes for destroyed local stream %" PRIi64,
+            datalen,
+            id);
+      app.ReturnConnectionCredit(datalen);
+      return NGTCP2_SUCCESS;
+    }
+
     if (auto stream = FindOrCreateStream(conn, &session, id)) [[likely]] {
       stream->ReceiveData(data, datalen, Stream::ReceiveDataFlags{});
       return NGTCP2_SUCCESS;

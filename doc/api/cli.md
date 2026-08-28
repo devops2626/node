@@ -202,8 +202,8 @@ added: v26.1.0
 When using the [Permission Model][], the process will not be able to use FFI
 APIs by default. Attempts to use FFI APIs will throw an `ERR_ACCESS_DENIED`
 exception unless the user explicitly passes the `--allow-ffi` flag when
-starting Node.js. The [`node:ffi`][] module also requires the
-`--experimental-ffi` flag and is only available in builds with FFI support.
+starting Node.js. The [`node:ffi`][] module is only available in builds with
+FFI support.
 
 Example:
 
@@ -213,7 +213,7 @@ const lib = new DynamicLibrary(`./mylib.${suffix}`);
 ```
 
 ```console
-$ node --permission --experimental-ffi index.js
+$ node --permission index.js
 Error: Access to this API has been restricted. Use --allow-ffi to manage permissions.
     at node:internal/main/run_main_module:17:47 {
   code: 'ERR_ACCESS_DENIED',
@@ -751,7 +751,9 @@ added:
   - v21.3.0
   - v20.11.0
 changes:
-  - version: v26.7.0
+  - version:
+     - v26.7.0
+     - v24.20.0
     pr-url: https://github.com/nodejs/node/pull/64742
     description: The `--disable-warning` flag is now stable.
 -->
@@ -1268,18 +1270,6 @@ added:
 
 Enable exposition of [EventSource Web API][] on the global scope.
 
-### `--experimental-ffi`
-
-<!-- YAML
-added: v26.1.0
--->
-
-> Stability: 1 - Experimental
-
-Enable the experimental [`node:ffi`][] module.
-
-This flag is only available in builds with FFI support.
-
 ### `--experimental-import-meta-resolve`
 
 <!-- YAML
@@ -1368,7 +1358,9 @@ Enable experimental support for the network inspection with Chrome DevTools.
 ### `--experimental-package-map=<path>`
 
 <!-- YAML
-added: v26.4.0
+added:
+ - v26.4.0
+ - v24.20.0
 -->
 
 > Stability: 1 - Experimental
@@ -1393,7 +1385,9 @@ added:
   - v22.0.0
   - v20.17.0
 changes:
-  - version: v26.5.0
+  - version:
+     - v26.5.0
+     - v24.20.0
     pr-url: https://github.com/nodejs/node/pull/64154
     description: Print the top-level awaits without evaluating the modules.
 -->
@@ -1452,6 +1446,7 @@ Enable experimental support for storage inspection
 <!-- YAML
 added:
  - v25.9.0
+ - v24.20.0
 -->
 
 > Stability: 1 - Experimental
@@ -2098,6 +2093,18 @@ changes:
 
 Disable using [syntax detection][] to determine module type.
 
+### `--no-experimental-ffi`
+
+<!-- YAML
+added: v26.1.0
+-->
+
+> Stability: 1 - Experimental
+
+Disable the experimental [`node:ffi`][] module.
+
+This flag is only available in builds with FFI support.
+
 ### `--no-experimental-global-navigator`
 
 <!-- YAML
@@ -2361,7 +2368,9 @@ following permissions are restricted:
 ### `--permission-audit`
 
 <!-- YAML
-added: v25.8.0
+added:
+ - v25.8.0
+ - v24.20.0
 -->
 
 Enable audit mode for the permission model. When enabled, permission checks
@@ -3747,7 +3756,7 @@ and by any user (the cache subdirectory is not suffixed with the creating user's
 ### `NODE_COMPILE_CACHE_READONLY=1`
 
 <!-- YAML
-added: REPLACEME
+added: v26.8.0
 -->
 
 When set to 1, the [module compile cache][] only reads existing entries from
@@ -3895,7 +3904,6 @@ one is included in the list below.
 * `--experimental-detect-module`
 * `--experimental-dtls`
 * `--experimental-eventsource`
-* `--experimental-ffi`
 * `--experimental-import-meta-resolve`
 * `--experimental-import-text`
 * `--experimental-json-modules`
@@ -3943,6 +3951,7 @@ one is included in the list below.
 * `--no-addons`
 * `--no-async-context-frame`
 * `--no-deprecation`
+* `--no-experimental-ffi`
 * `--no-experimental-global-navigator`
 * `--no-experimental-sqlite`
 * `--no-experimental-strip-types`

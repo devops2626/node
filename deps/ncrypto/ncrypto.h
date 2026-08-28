@@ -13,12 +13,15 @@
 #include <openssl/ssl.h>
 #include <openssl/x509.h>
 #include <cstddef>
+#include <cstdint>
 #include <functional>
 #include <list>
 #include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
+#include <unordered_map>
+#include <vector>
 #if defined(NCRYPTO_ENGINE_COMPAT) && NCRYPTO_ENGINE_COMPAT &&                 \
     !defined(OPENSSL_NO_ENGINE)
 #include <openssl/engine.h>
@@ -397,9 +400,12 @@ class Digest final {
   static constexpr size_t MAX_SIZE = EVP_MAX_MD_SIZE;
   Digest() = default;
   Digest(const EVP_MD* md) : md_(md) {}
-  Digest(const Digest&) = default;
-  Digest& operator=(const Digest&) = default;
+  Digest(const Digest& other);
+  Digest& operator=(const Digest& other);
   inline Digest& operator=(const EVP_MD* md) {
+#if NCRYPTO_USE_OPENSSL3_PROVIDER
+    fetched_md_.reset();
+#endif
     md_ = md;
     return *this;
   }
@@ -418,9 +424,72 @@ class Digest final {
   static const Digest SHA512;
 
   static const Digest FromName(const char* name);
+  static const Digest Fetch(const char* name);
 
  private:
   const EVP_MD* md_ = nullptr;
+#if NCRYPTO_USE_OPENSSL3_PROVIDER
+  explicit Digest(DeleteFnPtr<EVP_MD, EVP_MD_free> md);
+  DeleteFnPtr<EVP_MD, EVP_MD_free> fetched_md_;
+#endif
+};
+
+struct CaseInsensitiveNameHash {
+  using is_transparent = void;
+  size_t operator()(std::string_view name) const noexcept;
+};
+
+struct CaseInsensitiveNameEqual {
+  using is_transparent = void;
+  bool operator()(std::string_view lhs, std::string_view rhs) const noexcept;
+};
+
+class DigestCache final {
+ public:
+  struct Result {
+    const EVP_MD* digest = nullptr;
+    int32_t id = -1;
+  };
+
+  using AliasMap = std::unordered_map<std::string,
+                                      int32_t,
+                                      CaseInsensitiveNameHash,
+                                      CaseInsensitiveNameEqual>;
+
+  DigestCache() = default;
+  NCRYPTO_DISALLOW_COPY_AND_MOVE(DigestCache)
+
+  Result lookup(const char* name, uint64_t generation) const;
+  inline Result lookup(int32_t id, uint64_t generation) const {
+#if NCRYPTO_USE_OPENSSL3_PROVIDER
+    if (generation_ != generation || id == -1) return {};
+    const uint32_t unsigned_id = static_cast<uint32_t>(id);
+    if (unsigned_id < first_id_) return {};
+    const size_t index = unsigned_id - first_id_;
+    if (index >= digests_.size()) return {};
+    return {digests_[index].get(), id};
+#else
+    static_cast<void>(id);
+    static_cast<void>(generation);
+    return {};
+#endif
+  }
+  Result insert(const char* name, const EVP_MD* digest, uint64_t generation);
+  void reset(uint64_t generation);
+  const AliasMap& aliases() const;
+
+ private:
+  uint64_t generation_ = 0;
+#if NCRYPTO_USE_OPENSSL3_PROVIDER
+  using EVPMDPointer = DeleteFnPtr<EVP_MD, EVP_MD_free>;
+
+  // IDs are not reused across generations because JavaScript caches them
+  // independently in each Realm.
+  uint32_t first_id_ = 0;
+  uint32_t next_id_ = 0;
+  std::vector<EVPMDPointer> digests_;
+  AliasMap aliases_;
+#endif
 };
 
 // Computes a fixed-length digest.
@@ -430,6 +499,32 @@ DataPointer hashDigest(const Buffer<const unsigned char>& data,
 DataPointer xofHashDigest(const Buffer<const unsigned char>& data,
                           const EVP_MD* md,
                           size_t length);
+
+class CipherCache final {
+ public:
+  CipherCache() = default;
+  NCRYPTO_DISALLOW_COPY_AND_MOVE(CipherCache)
+
+  const EVP_CIPHER* lookup(const char* name, uint64_t generation);
+#if NCRYPTO_USE_OPENSSL3_PROVIDER
+  const EVP_CIPHER* insert(const char* name,
+                           DeleteFnPtr<EVP_CIPHER, EVP_CIPHER_free>&& cipher,
+                           uint64_t generation);
+#endif
+
+ private:
+#if NCRYPTO_USE_OPENSSL3_PROVIDER
+  using EVPCipherPointer = DeleteFnPtr<EVP_CIPHER, EVP_CIPHER_free>;
+
+  uint64_t generation_ = 0;
+  std::vector<EVPCipherPointer> ciphers_;
+  std::unordered_map<std::string,
+                     size_t,
+                     CaseInsensitiveNameHash,
+                     CaseInsensitiveNameEqual>
+      aliases_;
+#endif
+};
 
 class Cipher final {
  public:
@@ -452,7 +547,7 @@ class Cipher final {
   Cipher(const Cipher& other);
   Cipher& operator=(const Cipher& other);
   inline Cipher& operator=(const EVP_CIPHER* cipher) {
-#if OPENSSL_WITH_AES_SIV || OPENSSL_WITH_AES_GCM_SIV
+#if NCRYPTO_USE_OPENSSL3_PROVIDER
     fetched_cipher_.reset();
 #endif
     cipher_ = cipher;
@@ -476,6 +571,7 @@ class Cipher final {
   bool isWrapMode() const;
   bool isCtrMode() const;
   bool isCcmMode() const;
+  bool isCtsMode() const;
   bool isOcbMode() const;
   bool isSivMode() const;
   bool isGcmSivMode() const;
@@ -489,8 +585,8 @@ class Cipher final {
                  unsigned char* key,
                  unsigned char* iv) const;
 
-  static const Cipher FromName(const char* name);
-  static const Cipher FromNid(int nid);
+  static const Cipher FromName(const char* name, CipherCache* cache = nullptr);
+  static const Cipher FromNid(int nid, CipherCache* cache = nullptr);
   static const Cipher FromCtx(const CipherCtxPointer& ctx);
 
   using CipherNameCallback = std::function<void(const char* name)>;
@@ -499,28 +595,24 @@ class Cipher final {
   // is able to do so.
   static void ForEach(CipherNameCallback callback);
 
-  // Utilities to get various ciphers by type. If the underlying
-  // implementation does not support the requested cipher, then
-  // the result will be an empty Cipher object whose bool operator
-  // will return false.
-
-  static const Cipher EMPTY;
-  static const Cipher AES_128_CBC;
-  static const Cipher AES_192_CBC;
-  static const Cipher AES_256_CBC;
-  static const Cipher AES_128_CTR;
-  static const Cipher AES_192_CTR;
-  static const Cipher AES_256_CTR;
-  static const Cipher AES_128_GCM;
-  static const Cipher AES_192_GCM;
-  static const Cipher AES_256_GCM;
-  static const Cipher AES_128_KW;
-  static const Cipher AES_192_KW;
-  static const Cipher AES_256_KW;
-  static const Cipher AES_128_OCB;
-  static const Cipher AES_192_OCB;
-  static const Cipher AES_256_OCB;
-  static const Cipher CHACHA20_POLY1305;
+  // Lazily resolves common ciphers. If the underlying implementation does not
+  // support the requested cipher, the returned Cipher will be empty.
+  static const Cipher& AES_128_CBC();
+  static const Cipher& AES_192_CBC();
+  static const Cipher& AES_256_CBC();
+  static const Cipher& AES_128_CTR();
+  static const Cipher& AES_192_CTR();
+  static const Cipher& AES_256_CTR();
+  static const Cipher& AES_128_GCM();
+  static const Cipher& AES_192_GCM();
+  static const Cipher& AES_256_GCM();
+  static const Cipher& AES_128_KW();
+  static const Cipher& AES_192_KW();
+  static const Cipher& AES_256_KW();
+  static const Cipher& AES_128_OCB();
+  static const Cipher& AES_192_OCB();
+  static const Cipher& AES_256_OCB();
+  static const Cipher& CHACHA20_POLY1305();
 
   struct CipherParams {
     int padding;
@@ -550,7 +642,7 @@ class Cipher final {
 
  private:
   const EVP_CIPHER* cipher_ = nullptr;
-#if OPENSSL_WITH_AES_SIV || OPENSSL_WITH_AES_GCM_SIV
+#if NCRYPTO_USE_OPENSSL3_PROVIDER
   explicit Cipher(DeleteFnPtr<EVP_CIPHER, EVP_CIPHER_free> cipher);
   DeleteFnPtr<EVP_CIPHER, EVP_CIPHER_free> fetched_cipher_;
 #endif
@@ -940,7 +1032,9 @@ class CipherCtxPointer final {
   bool setIvLength(size_t length);
   bool setAeadTag(const Buffer<const char>& tag);
   bool setAeadTagLength(size_t length);
+  bool setCtsMode(const char* mode);
   bool setPadding(bool padding);
+  bool setXtsStandard(const char* standard);
   bool init(const Cipher& cipher,
             bool encrypt,
             const unsigned char* key = nullptr,
@@ -953,6 +1047,8 @@ class CipherCtxPointer final {
   bool isGcmMode() const;
   bool isOcbMode() const;
   bool isCcmMode() const;
+  bool isCtsMode() const;
+  bool isXtsMode() const;
   bool isWrapMode() const;
   bool isSivMode() const;
   bool isGcmSivMode() const;
@@ -1690,7 +1786,16 @@ class EVPMDCtxPointer final {
   void reset(EVP_MD_CTX* ctx = nullptr);
   EVP_MD_CTX* release();
 
-  bool digestInit(const Digest& digest);
+  bool digestInit(const EVP_MD* digest);
+  inline bool digestInit(const Digest& digest) {
+    return digestInit(digest.get());
+  }
+#if !defined(OPENSSL_IS_BORINGSSL) && OPENSSL_VERSION_PREREQ(4, 0)
+  bool digestInit(const EVP_MD* digest, const OSSL_PARAM* params);
+  inline bool digestInit(const Digest& digest, const OSSL_PARAM* params) {
+    return digestInit(digest.get(), params);
+  }
+#endif
   bool digestUpdate(const Buffer<const void>& in);
   DataPointer digestFinal(size_t length);
   bool digestFinalInto(Buffer<void>* buf);
@@ -1879,6 +1984,8 @@ class EnginePointer final {
 bool isFipsEnabled();
 
 bool setFipsEnabled(bool enabled, CryptoErrorList* errors);
+
+uint64_t getFipsStateGeneration();
 
 bool testFipsEnabled();
 
