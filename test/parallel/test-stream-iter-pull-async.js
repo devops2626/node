@@ -3,7 +3,15 @@
 
 const common = require('../common');
 const assert = require('assert');
-const { pull, from, text, tap } = require('stream/iter');
+const {
+  broadcast,
+  from,
+  pull,
+  push,
+  share,
+  tap,
+  text,
+} = require('stream/iter');
 
 async function testPullIdentity() {
   const data = await text(pull(from('hello-async')));
@@ -168,6 +176,61 @@ async function testPullSignalAbortWhileSourceNextPending() {
   const next = iter.next();
   ac.abort();
   await assert.rejects(next, { name: 'AbortError' });
+}
+
+async function testPullReturnWhileSourceNextPending() {
+  let startNext;
+  const nextStarted = new Promise((resolve) => { startNext = resolve; });
+  const source = {
+    [Symbol.asyncIterator]() {
+      return {
+        next() {
+          startNext();
+          return new Promise(() => {});
+        },
+      };
+    },
+  };
+
+  const iter = pull(source)[Symbol.asyncIterator]();
+  const next = assert.rejects(iter.next(), { name: 'AbortError' });
+  await nextStarted;
+
+  const timeout = {};
+  const result = await Promise.race([
+    iter.return(),
+    new Promise((resolve) => setImmediate(resolve, timeout)),
+  ]);
+
+  assert.notStrictEqual(result, timeout);
+  assert.deepStrictEqual(result, { value: undefined, done: true });
+  await next;
+}
+
+async function testTransformedConsumerReturnBeforeNext() {
+  const identity = (chunks) => chunks;
+  const pushed = push(identity);
+  const { broadcast: bc } = broadcast();
+  const broadcastConsumer = bc.push(identity);
+  const shared = share(from('shared'));
+  const sharedConsumer = shared.pull(identity);
+
+  assert.strictEqual(bc.consumerCount, 1);
+  assert.strictEqual(shared.consumerCount, 1);
+
+  const cases = [
+    [pushed.readable, common.mustCall(
+      () => assert.strictEqual(pushed.writer.canWrite, null))],
+    [broadcastConsumer, common.mustCall(
+      () => assert.strictEqual(bc.consumerCount, 0))],
+    [sharedConsumer, common.mustCall(
+      () => assert.strictEqual(shared.consumerCount, 0))],
+  ];
+
+  for (const [readable, verify] of cases) {
+    await readable[Symbol.asyncIterator]().return();
+    verify();
+  }
 }
 
 async function testPullSignalAbortWithTransformWhileSourceNextPending() {
@@ -417,6 +480,8 @@ async function testTransformOptionsNotShared() {
     testTapCallbackError(),
     testPullSignalAbortMidIteration(),
     testPullSignalAbortWhileSourceNextPending(),
+    testPullReturnWhileSourceNextPending(),
+    testTransformedConsumerReturnBeforeNext(),
     testPullSignalAbortWithTransformWhileSourceNextPending(),
     testPullConsumerBreakCleanup(),
     testPullTransformReturnsPromise(),

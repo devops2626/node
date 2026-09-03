@@ -25,6 +25,7 @@ namespace sqlite {
 
 using v8::Array;
 using v8::ArrayBuffer;
+using v8::BackingStore;
 using v8::BackingStoreInitializationMode;
 using v8::BackingStoreOnFailureMode;
 using v8::BigInt;
@@ -168,6 +169,16 @@ inline MaybeLocal<Value> IntegerToValue(Isolate* isolate,
       (stmt)->db_->IsInAuthorizerCallback() &&                                 \
           sqlite3_stmt_busy((stmt)->statement_.get()),                         \
       "database cannot be accessed from an authorizer callback")
+
+// SQLite's session module reaches back into JavaScript from inside the
+// pre-update hook, while it is still walking the connection's session list and
+// reading the table it found there. Deleting a session frees memory that walk
+// is still using, so no callback may close one.
+#define THROW_AND_RETURN_IF_SESSION_IN_CALLBACK(env, session)                  \
+  THROW_AND_RETURN_ON_BAD_STATE(                                               \
+      (env),                                                                   \
+      (session)->database_->IsInCallback(),                                    \
+      "session cannot be closed while in a callback")
 
 // A statement's virtual machine cannot be reentered while sqlite3_step() is
 // running it. Finalizing it frees the VM outright, and re-running it resets the
@@ -624,9 +635,13 @@ class BackupJob : public ThreadPoolWork {
   }
 
   void AfterThreadPoolWork(int status) override {
-    HandleScope handle_scope(env()->isolate());
+    Isolate* isolate = env()->isolate();
+    HandleScope handle_scope(isolate);
+    Context::Scope context_scope(env()->context());
+    InternalCallbackScope callback_scope(
+        env(), Object::New(isolate), {0, 0}, InternalCallbackScope::kNoFlags);
     Local<Promise::Resolver> resolver =
-        Local<Promise::Resolver>::New(env()->isolate(), resolver_);
+        Local<Promise::Resolver>::New(isolate, resolver_);
 
     if (!(backup_status_ == SQLITE_OK || backup_status_ == SQLITE_DONE ||
           backup_status_ == SQLITE_BUSY || backup_status_ == SQLITE_LOCKED)) {
@@ -1022,6 +1037,15 @@ void DatabaseSync::AddBackup(BackupJob* job) {
 
 void DatabaseSync::RemoveBackup(BackupJob* job) {
   backups_.erase(job);
+}
+
+std::vector<BaseObjectPtr<Session>> DatabaseSync::PinSessions() const {
+  std::vector<BaseObjectPtr<Session>> pinned;
+  pinned.reserve(sessions_.size());
+  for (Session* session : sessions_) {
+    pinned.emplace_back(session);
+  }
+  return pinned;
 }
 
 void DatabaseSync::DeleteSessions() {
@@ -2584,21 +2608,42 @@ void DatabaseSync::ApplyChangeset(const FunctionCallbackInfo<Value>& args) {
     }
   }
 
-  // Keep the database alive during sqlite3changeset_apply(), which may
-  // call conflict or filter callbacks that trigger JavaScript execution.
-  // If the JavaScript callback drops all references to the database,
-  // the DatabaseSync could otherwise be garbage-collected while the
-  // callback is still executing, causing a use-after-free.
+  // Keep the database alive in case a callback drops all references to it,
+  // which could otherwise let it be garbage-collected mid-callback.
   BaseObjectPtr<DatabaseSync> guard(db);
 
   ArrayBufferViewContents<uint8_t> buf(args[0]);
+  if (buf.length() > std::numeric_limits<int>::max()) {
+    THROW_ERR_OUT_OF_RANGE(env, "The changeset is too large.");
+    return;
+  }
+
+  // A callback may detach/modify the input buffer mid-apply, so copy it.
+  // With no callbacks, no JS runs during sqlite3changeset_apply(), so no
+  // copy is needed.
+  std::unique_ptr<BackingStore> changeset;
+  if (buf.length() > 0 &&
+      (context.filterCallback || context.conflictCallback)) {
+    changeset = ArrayBuffer::NewBackingStore(
+        env->isolate(),
+        buf.length(),
+        BackingStoreInitializationMode::kUninitialized,
+        BackingStoreOnFailureMode::kReturnNull);
+    if (!changeset) {
+      THROW_ERR_MEMORY_ALLOCATION_FAILED(env);
+      return;
+    }
+    std::memcpy(changeset->Data(), buf.data(), buf.length());
+  }
+
   int r;
   {
     CallbackDepthGuard guard(db);
     r = sqlite3changeset_apply(
         db->connection_.get(),
-        buf.length(),
-        const_cast<void*>(static_cast<const void*>(buf.data())),
+        static_cast<int>(buf.length()),
+        changeset ? changeset->Data()
+                  : const_cast<void*>(static_cast<const void*>(buf.data())),
         context.filterCallback ? xFilter : nullptr,
         xConflict,
         static_cast<void*>(&context));
@@ -2832,6 +2877,10 @@ int DatabaseSync::TraceCallback(unsigned int type,
     return 0;
   }
 
+  // Entered before building the payload below, because allocating it can
+  // trigger a garbage collection that SQLite is not prepared for.
+  CallbackDepthGuard guard(db);
+
   Isolate* isolate = env->isolate();
   HandleScope handle_scope(isolate);
 
@@ -2870,7 +2919,6 @@ int DatabaseSync::TraceCallback(unsigned int type,
 
   Local<Object> payload = Object::New(isolate, Null(isolate), keys, values, 3);
 
-  CallbackDepthGuard guard(db);
   ch->Publish(env, payload);
 
   return 0;
@@ -4346,6 +4394,9 @@ void Session::Close(const FunctionCallbackInfo<Value>& args) {
       env, session->session_ == nullptr, "session is not open");
   THROW_AND_RETURN_ON_BAD_STATE(
       env, session->is_generating_changeset_, "session is currently in use");
+  // Checked last: changeset generation runs the authorizer, so both conditions
+  // hold in that case and the more specific message above has to win.
+  THROW_AND_RETURN_IF_SESSION_IN_CALLBACK(env, session);
 
   session->Delete();
 }
@@ -4359,6 +4410,7 @@ void Session::Dispose(const FunctionCallbackInfo<Value>& args) {
   }
   THROW_AND_RETURN_ON_BAD_STATE(
       env, session->is_generating_changeset_, "session is currently in use");
+  THROW_AND_RETURN_IF_SESSION_IN_CALLBACK(env, session);
 
   session->Delete();
 }

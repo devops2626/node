@@ -146,7 +146,7 @@ const patterns = {
     'a/x',
     'a/z',
   ],
-  './**/a': common.isWindows ? ['a'] : ['a', 'a/symlink/a', 'a/symlink/a/b/c/a'],
+  './**/a': common.isWindows ? ['a'] : ['a', 'a/symlink/a'],
   './**/a/**/': [
     'a',
     'a/abcdef',
@@ -166,10 +166,6 @@ const patterns = {
       'a/symlink',
       'a/symlink/a',
       'a/symlink/a/b',
-      'a/symlink/a/b/c',
-      'a/symlink/a/b/c/a',
-      'a/symlink/a/b/c/a/b',
-      'a/symlink/a/b/c/a/b/c',
     ]),
     'a/x',
     'a/z',
@@ -200,9 +196,6 @@ const patterns = {
       'a/symlink/a',
       'a/symlink/a/b',
       'a/symlink/a/b/c',
-      'a/symlink/a/b/c/a',
-      'a/symlink/a/b/c/a/b',
-      'a/symlink/a/b/c/a/b/c',
     ]),
     'a/x',
     'a/z',
@@ -210,13 +203,6 @@ const patterns = {
   './**/a/**/a/**/': common.isWindows ? [] : [
     'a/symlink/a',
     'a/symlink/a/b',
-    'a/symlink/a/b/c',
-    'a/symlink/a/b/c/a',
-    'a/symlink/a/b/c/a/b',
-    'a/symlink/a/b/c/a/b/c',
-    'a/symlink/a/b/c/a/b/c/a',
-    'a/symlink/a/b/c/a/b/c/a/b',
-    'a/symlink/a/b/c/a/b/c/a/b/c',
   ],
   '+(a|b|c)/a{/,bc*}/**': [
     'a/abcdef',
@@ -295,7 +281,6 @@ const patterns = {
   'a/symlink/a/**/*': common.isWindows ? [] : [
     'a/symlink/a/b',
     'a/symlink/a/b/c',
-    'a/symlink/a/b/c/a',
   ],
   'a/!(symlink)/**/..': [
     'a',
@@ -996,5 +981,33 @@ describe('glob - seen cache', function() {
       ['--expose-internals', '-e', script, seenDir],
       { encoding: 'utf8' },
     );
+  });
+});
+
+// gh-58991: exclude patterns must apply the same case-sensitivity as include
+// patterns. On case-insensitive filesystems include patterns match entries
+// regardless of case, so literal exclude patterns must match that behavior.
+const skipCaseTests = { skip: !common.isWindows && !common.isMacOS };
+describe('glob - exclude case-insensitive consistency', skipCaseTests, function() {
+  test('literal exclude ignores case (sync)', () => {
+    assert.deepStrictEqual(
+      globSync('a/b', { cwd: fixtureDir, exclude: ['A/B'] }), []);
+  });
+  test('literal exclude matches differently-cased results (sync)', () => {
+    assert.deepStrictEqual(
+      globSync('A/b', { cwd: fixtureDir, exclude: ['a/b'] }), []);
+  });
+  test('literal exclude ignores case (async)', async () => {
+    const promisified = promisify(glob);
+    assert.deepStrictEqual(
+      await promisified('a/b', { cwd: fixtureDir, exclude: ['A/B'] }), []);
+  });
+  test('literal exclude ignores case (promise)', async () => {
+    const actual = [];
+    for await (const entry of asyncGlob(
+      'a/b', { cwd: fixtureDir, exclude: ['A/B'] })) {
+      actual.push(entry);
+    }
+    assert.deepStrictEqual(actual, []);
   });
 });
